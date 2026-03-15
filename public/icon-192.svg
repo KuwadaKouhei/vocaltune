@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192" width="192" height="192">
+  <rect width="192" height="192" rx="32" fill="#0a0a0f"/>
+  <g transform="translate(96,96)">
+    <!-- 波形 -->
+    <path d="M-56,0 Q-42,-40 -28,0 Q-14,40 0,0 Q14,-40 28,0 Q42,40 56,0" fill="none" stroke="#00e5ff" stroke-width="6" stroke-linecap="round"/>
+    <!-- マイクアイコン -->
+    <circle cx="0" cy="-8" r="14" fill="none" stroke="#00e5ff" stroke-width="4"/>
+    <line x1="0" y1="6" x2="0" y2="20" stroke="#00e5ff" stroke-width="4" stroke-linecap="round"/>
+    <path d="M-10,20 L10,20" fill="none" stroke="#00e5ff" stroke-width="4" stroke-linecap="round"/>
+  </g>
+</svg>
