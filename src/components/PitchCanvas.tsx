@@ -120,6 +120,35 @@ export default function PitchCanvas({
     return { xRatio, midi };
   }, [semitoneHeight]);
 
+  // 既存ストロークからxRatio範囲が重複する部分を除去
+  const eraseOverlap = useCallback((strokes: TargetPoint[][], xMin: number, xMax: number): TargetPoint[][] => {
+    const result: TargetPoint[][] = [];
+    for (const stroke of strokes) {
+      // 重複しないポイントだけ残す（連続する非重複部分を別ストロークに分割）
+      let current: TargetPoint[] = [];
+      for (const p of stroke) {
+        if (p.xRatio < xMin || p.xRatio > xMax) {
+          current.push(p);
+        } else {
+          // 重複範囲に入った → ここまでのセグメントを保存
+          if (current.length > 0) {
+            result.push(current);
+            current = [];
+          }
+        }
+      }
+      if (current.length > 0) {
+        result.push(current);
+      }
+    }
+    return result;
+  }, []);
+
+  // 描画範囲の追跡用ref
+  const strokeXMinRef = useRef(0);
+  const strokeXMaxRef = useRef(0);
+  const baseStrokesRef = useRef<TargetPoint[][]>([]);
+
   // 編集モードのマウスイベント
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -130,7 +159,12 @@ export default function PitchCanvas({
       const point = mouseToPoint(e);
       if (point && onTargetStrokesChange) {
         currentStrokeRef.current = [point];
-        onTargetStrokesChange([...targetStrokes, [point]]);
+        strokeXMinRef.current = point.xRatio;
+        strokeXMaxRef.current = point.xRatio;
+        // 既存ストロークから重複を除去してベースとして保存
+        const cleaned = eraseOverlap(targetStrokes, point.xRatio - 0.002, point.xRatio + 0.002);
+        baseStrokesRef.current = cleaned;
+        onTargetStrokesChange([...cleaned, [point]]);
       }
     };
 
@@ -141,9 +175,13 @@ export default function PitchCanvas({
         const last = currentStrokeRef.current[currentStrokeRef.current.length - 1];
         if (!last || Math.abs(point.xRatio - last.xRatio) > 0.002) {
           currentStrokeRef.current = [...currentStrokeRef.current, point];
-          // 最後のストロークを更新
-          const updated = [...targetStrokes.slice(0, -1), currentStrokeRef.current];
-          onTargetStrokesChange(updated);
+          // 描画範囲を拡張
+          strokeXMinRef.current = Math.min(strokeXMinRef.current, point.xRatio);
+          strokeXMaxRef.current = Math.max(strokeXMaxRef.current, point.xRatio);
+          // ベースストロークから新しい範囲の重複を除去
+          const cleaned = eraseOverlap(baseStrokesRef.current, strokeXMinRef.current - 0.002, strokeXMaxRef.current + 0.002);
+          baseStrokesRef.current = cleaned;
+          onTargetStrokesChange([...cleaned, currentStrokeRef.current]);
         }
       }
     };
@@ -161,7 +199,7 @@ export default function PitchCanvas({
       canvas.removeEventListener("mousemove", handleMouseMove);
       window.removeEventListener("mouseup", handleMouseUp);
     };
-  }, [editMode, mouseToPoint, onTargetStrokesChange, targetStrokes]);
+  }, [editMode, mouseToPoint, onTargetStrokesChange, targetStrokes, eraseOverlap]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
