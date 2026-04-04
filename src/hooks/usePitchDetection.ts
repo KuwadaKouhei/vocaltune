@@ -10,8 +10,10 @@ import {
   stopMicrophone,
   type MicrophoneHandle,
 } from "@/lib/audio/microphone";
+import { medianFilter } from "@/lib/pitch/filter";
 
 const HISTORY_LENGTH = 200;
+const MEDIAN_WINDOW = 5;
 
 export interface UsePitchDetectionReturn {
   isListening: boolean;
@@ -43,11 +45,13 @@ export function usePitchDetection(): UsePitchDetectionReturn {
   const historyRef = useRef<(number | null)[]>([]);
   const timestampedRef = useRef<TimestampedPitch[]>([]);
   const startTimeRef = useRef<number>(0);
+  const rawBufferRef = useRef<(number | null)[]>([]);
 
   const resetSession = useCallback(() => {
     historyRef.current = [];
     timestampedRef.current = [];
     startTimeRef.current = 0;
+    rawBufferRef.current = [];
     setPitchHistory([]);
     setTimestampedPitches([]);
     setElapsedTime(0);
@@ -89,13 +93,21 @@ export function usePitchDetection(): UsePitchDetectionReturn {
         mic.analyser.getFloatTimeDomainData(buffer);
         const result = detectPitch(buffer, mic.audioContext.sampleRate);
 
-        if (result) {
-          const note = freqToNote(result.frequency);
+        // メディアンフィルタでジッター除去
+        const rawFreq = result ? result.frequency : null;
+        rawBufferRef.current.push(rawFreq);
+        if (rawBufferRef.current.length > MEDIAN_WINDOW) {
+          rawBufferRef.current = rawBufferRef.current.slice(-MEDIAN_WINDOW);
+        }
+        const filtered = medianFilter(rawBufferRef.current, MEDIAN_WINDOW);
+
+        if (filtered !== null) {
+          const note = freqToNote(filtered);
           setCurrentNote(note);
-          historyRef.current.push(result.frequency);
+          historyRef.current.push(filtered);
           timestampedRef.current.push({
             time: elapsed,
-            frequency: result.frequency,
+            frequency: filtered,
           });
         } else {
           setCurrentNote(null);

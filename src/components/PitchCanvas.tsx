@@ -9,6 +9,15 @@ import type { TimestampedPitch } from "@/lib/scoring/engine";
 export interface TargetPoint {
   xRatio: number;
   midi: number;
+  /** 描画したユーザーID（共同編集時の色分け用） */
+  userId?: string;
+}
+
+/** リモートカーソル（共同編集用） */
+export interface RemoteCursorData {
+  userId: string;
+  point: TargetPoint;
+  color: string;
 }
 
 interface PitchCanvasProps {
@@ -26,6 +35,16 @@ interface PitchCanvasProps {
   onTargetStrokesChange?: (strokes: TargetPoint[][]) => void;
   /** 半音あたりのピクセル高 */
   semitoneHeight?: number;
+  /** 拍グリッドにスナップするか */
+  snapToGrid?: boolean;
+  /** ストローク確定時のコールバック（Undo/Redo用） */
+  onStrokeCommit?: () => void;
+  /** リモートカーソル（共同編集時） */
+  remoteCursors?: RemoteCursorData[];
+  /** カーソル移動コールバック（共同編集時） */
+  onCursorMove?: (point: TargetPoint) => void;
+  /** 自分のユーザーID（色分け用） */
+  localUserId?: string | null;
 }
 
 // 1半音あたりのピクセル高（固定）
@@ -57,6 +76,11 @@ export default function PitchCanvas({
   targetStrokes = [],
   onTargetStrokesChange,
   semitoneHeight = SEMITONE_HEIGHT,
+  snapToGrid = false,
+  onStrokeCommit,
+  remoteCursors,
+  onCursorMove,
+  localUserId,
 }: PitchCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -112,13 +136,21 @@ export default function PitchCanvas({
     const { width, height } = sizeRef.current;
     if (width === 0 || height === 0) return null;
 
-    const xRatio = Math.max(0, Math.min(1, x / width));
+    let xRatio = Math.max(0, Math.min(1, x / width));
+
+    // 拍グリッドにスナップ
+    if (snapToGrid) {
+      const totalBeats = bars * BEATS_PER_BAR;
+      const beatStep = 1 / totalBeats;
+      xRatio = Math.round(xRatio / beatStep) * beatStep;
+    }
+
     const center = centerRef.current;
     const midiRaw = center + (height / 2 - y) / semitoneHeight;
     const midi = Math.round(midiRaw);
 
     return { xRatio, midi };
-  }, [semitoneHeight]);
+  }, [semitoneHeight, snapToGrid, bars]);
 
   // 既存ストロークからxRatio範囲が重複する部分を除去
   const eraseOverlap = useCallback((strokes: TargetPoint[][], xMin: number, xMax: number): TargetPoint[][] => {
@@ -187,19 +219,31 @@ export default function PitchCanvas({
     };
 
     const handleMouseUp = () => {
-      isDrawingRef.current = false;
+      if (isDrawingRef.current) {
+        isDrawingRef.current = false;
+        onStrokeCommit?.();
+      }
+    };
+
+    // カーソル位置をリモートに送信
+    const handleCursorMove = (e: MouseEvent) => {
+      if (!onCursorMove) return;
+      const point = mouseToPoint(e);
+      if (point) onCursorMove(point);
     };
 
     canvas.addEventListener("mousedown", handleMouseDown);
     canvas.addEventListener("mousemove", handleMouseMove);
+    canvas.addEventListener("mousemove", handleCursorMove);
     window.addEventListener("mouseup", handleMouseUp);
 
     return () => {
       canvas.removeEventListener("mousedown", handleMouseDown);
       canvas.removeEventListener("mousemove", handleMouseMove);
+      canvas.removeEventListener("mousemove", handleCursorMove);
       window.removeEventListener("mouseup", handleMouseUp);
     };
-  }, [editMode, mouseToPoint, onTargetStrokesChange, targetStrokes, eraseOverlap]);
+  }, [editMode, mouseToPoint, onTargetStrokesChange, targetStrokes, eraseOverlap, onCursorMove, onStrokeCommit]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -372,12 +416,23 @@ export default function PitchCanvas({
 
       // === 目標ピッチライン描画（ストローク単位、同一音程区間をまとめた矩形） ===
       if (targetStrokes.length > 0) {
-        ctx.fillStyle = "rgba(255, 200, 0, 0.25)";
-        ctx.strokeStyle = "rgba(255, 200, 0, 0.6)";
         ctx.lineWidth = 1;
 
         for (const stroke of targetStrokes) {
           if (stroke.length === 0) continue;
+
+          // ユーザー別色分け: 自分=黄色、相手=シアン
+          const strokeUserId = stroke[0].userId;
+          const isRemote = localUserId !== undefined && localUserId !== null
+            && strokeUserId !== undefined && strokeUserId !== localUserId;
+
+          if (isRemote) {
+            ctx.fillStyle = "rgba(0, 229, 255, 0.25)";
+            ctx.strokeStyle = "rgba(0, 229, 255, 0.6)";
+          } else {
+            ctx.fillStyle = "rgba(255, 200, 0, 0.25)";
+            ctx.strokeStyle = "rgba(255, 200, 0, 0.6)";
+          }
 
           let segStart = 0;
           for (let i = 1; i <= stroke.length; i++) {
@@ -503,12 +558,43 @@ export default function PitchCanvas({
         ctx.fillRect(0, 0, width, height);
       }
 
+      // === リモートカーソル描画 ===
+      if (remoteCursors && remoteCursors.length > 0) {
+        for (const cursor of remoteCursors) {
+          const cx = cursor.point.xRatio * width;
+          const cy = midiToY(cursor.point.midi);
+
+          // 十字カーソル
+          ctx.strokeStyle = cursor.color;
+          ctx.lineWidth = 1.5;
+          ctx.globalAlpha = 0.7;
+
+          ctx.beginPath();
+          ctx.moveTo(cx - 10, cy);
+          ctx.lineTo(cx + 10, cy);
+          ctx.stroke();
+
+          ctx.beginPath();
+          ctx.moveTo(cx, cy - 10);
+          ctx.lineTo(cx, cy + 10);
+          ctx.stroke();
+
+          // ドット
+          ctx.beginPath();
+          ctx.arc(cx, cy, 4, 0, Math.PI * 2);
+          ctx.fillStyle = cursor.color;
+          ctx.fill();
+
+          ctx.globalAlpha = 1.0;
+        }
+      }
+
       rafId = requestAnimationFrame(draw);
     };
 
     rafId = requestAnimationFrame(draw);
     return () => cancelAnimationFrame(rafId);
-  }, [pitchHistory, timestampedPitches, midiNotes, elapsedTime, targetStrokes, editMode, bpm, bars, semitoneHeight]);
+  }, [pitchHistory, timestampedPitches, midiNotes, elapsedTime, targetStrokes, editMode, bpm, bars, semitoneHeight, remoteCursors, localUserId]);
 
   return (
     <div ref={containerRef} className="w-full h-full min-h-[300px]">

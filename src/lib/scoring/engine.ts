@@ -1,5 +1,6 @@
 import type { MidiNote } from "@/lib/midi/types";
 import { midiToFreq } from "@/lib/pitch/notes";
+import { detectVibrato, type VibratoInfo } from "@/lib/pitch/vibrato";
 
 export interface NoteScore {
   noteIndex: number;
@@ -7,6 +8,7 @@ export interface NoteScore {
   accuracy: number; // 0-100
   avgCentsDiff: number;
   maxCentsDiff: number;
+  vibrato?: { rate: number; extent: number };
 }
 
 export interface SessionScore {
@@ -74,23 +76,47 @@ export function calculateScore(
       continue;
     }
 
-    // セント差を計算
-    const centsDiffs = matchingPitches.map((p) =>
-      centsDiff(p.frequency!, targetFreq)
-    );
+    // ビブラート検出
+    const nonNullPitches = matchingPitches
+      .filter((p): p is { time: number; frequency: number } => p.frequency !== null);
+    const vibratoResult = nonNullPitches.length >= 6
+      ? detectVibrato(nonNullPitches)
+      : null;
+
+    // セント差を計算（ビブラート時は中心周波数との差を使用）
+    const compareFreq = vibratoResult?.isVibrato
+      ? vibratoResult.centerFrequency
+      : null;
+
+    const centsDiffs = matchingPitches.map((p) => {
+      if (vibratoResult?.isVibrato && compareFreq) {
+        // ビブラート区間: 中心周波数とターゲットの差で評価（振幅をペナルティにしない）
+        return centsDiff(compareFreq, targetFreq);
+      }
+      return centsDiff(p.frequency!, targetFreq);
+    });
 
     const avgCents =
       centsDiffs.reduce((sum, c) => sum + c, 0) / centsDiffs.length;
     const maxCents = Math.max(...centsDiffs);
     const accuracy = Math.max(0, 100 - avgCents * 2);
 
-    noteScores.push({
+    const noteScore: NoteScore = {
       noteIndex: i,
       midi: note.midi,
       accuracy,
       avgCentsDiff: Math.round(avgCents * 10) / 10,
       maxCentsDiff: Math.round(maxCents * 10) / 10,
-    });
+    };
+
+    if (vibratoResult?.isVibrato) {
+      noteScore.vibrato = {
+        rate: vibratoResult.rate,
+        extent: vibratoResult.extent,
+      };
+    }
+
+    noteScores.push(noteScore);
 
     weightedSum += accuracy * note.duration;
     totalDuration += note.duration;

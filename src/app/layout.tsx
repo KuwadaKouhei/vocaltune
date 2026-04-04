@@ -72,7 +72,14 @@ export default function RootLayout({
               className="text-xs transition-colors"
               style={{ color: "#555555", fontFamily: "monospace", textDecoration: "none" }}
             >
-              Monitor
+              Home
+            </Link>
+            <Link
+              href="/solo"
+              className="text-xs transition-colors"
+              style={{ color: "#555555", fontFamily: "monospace", textDecoration: "none" }}
+            >
+              Solo
             </Link>
             <Link
               href="/visualizer"

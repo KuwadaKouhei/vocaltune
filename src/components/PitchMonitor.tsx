@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, type DragEvent } from "react";
+import { useState, useCallback, useRef, useEffect, type DragEvent } from "react";
 import { usePitchDetection } from "@/hooks/usePitchDetection";
 import { useRecordings } from "@/hooks/useRecordings";
 import { parseMidiFile } from "@/lib/midi/parser";
@@ -12,8 +12,36 @@ import PitchCanvas, { type TargetPoint } from "./PitchCanvas";
 import NoteDisplay from "./NoteDisplay";
 import ScoreDisplay from "./ScoreDisplay";
 import Image from "next/image";
+import type { RemoteCursor } from "@/lib/collab/types";
+import Onboarding from "./Onboarding";
 
-export default function PitchMonitor() {
+export interface PitchMonitorProps {
+  /** 共同編集モード時の外部状態 */
+  collabState?: {
+    bpm: number;
+    bars: number;
+    semitoneHeight: number;
+    metronomeOn: boolean;
+    editMode: boolean;
+    targetStrokes: TargetPoint[][];
+    midiFile: { data: ArrayBuffer; fileName: string } | null;
+    setBpm: (value: number) => void;
+    setBars: (value: number) => void;
+    setSemitoneHeight: (value: number) => void;
+    setMetronomeOn: (value: boolean) => void;
+    setEditMode: (value: boolean) => void;
+    setTargetStrokes: (strokes: TargetPoint[][]) => void;
+    uploadMidi: (data: ArrayBuffer, fileName: string) => void;
+    clearMidi: () => void;
+    sendCursorMove?: (point: TargetPoint) => void;
+    remoteCursors?: RemoteCursor[];
+    userId?: string | null;
+  };
+  /** ヘッダー上部に追加表示するノード */
+  statusBar?: React.ReactNode;
+}
+
+export default function PitchMonitor({ collabState, statusBar }: PitchMonitorProps = {}) {
   const {
     isListening,
     currentNote,
@@ -28,20 +56,124 @@ export default function PitchMonitor() {
 
   const { save } = useRecordings();
 
-  const [midiTrack, setMidiTrack] = useState<MidiTrack | null>(null);
+  const [midiTrack, setMidiTrackLocal] = useState<MidiTrack | null>(null);
   const [midiFileName, setMidiFileName] = useState<string | null>(null);
   const [score, setScore] = useState<SessionScore | null>(null);
   const [isDragOver, setIsDragOver] = useState(false);
   const [midiError, setMidiError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
-  const [bpmInput, setBpmInput] = useState("120");
+  const [bpmInput, setBpmInput] = useState(collabState ? String(collabState.bpm) : "120");
   const [bpmError, setBpmError] = useState<string | null>(null);
-  const [metronomeOn, setMetronomeOn] = useState(false);
-  const [barsInput, setBarsInput] = useState("2");
+  const [metronomeOnLocal, setMetronomeOnLocal] = useState(false);
+  const [barsInput, setBarsInput] = useState(collabState ? String(collabState.bars) : "2");
   const [barsError, setBarsError] = useState<string | null>(null);
-  const [editMode, setEditMode] = useState(false);
-  const [targetStrokes, setTargetStrokes] = useState<TargetPoint[][]>([]);
-  const [semitoneHeight, setSemitoneHeight] = useState(16);
+  const [editModeLocal, setEditModeLocal] = useState(false);
+  const [targetStrokesLocal, setTargetStrokesLocal] = useState<TargetPoint[][]>([]);
+  const [semitoneHeightLocal, setSemitoneHeightLocal] = useState(16);
+  const [snapToGrid, setSnapToGrid] = useState(false);
+
+  // Undo/Redo
+  const strokeHistoryRef = useRef<TargetPoint[][][]>([]);
+  const redoStackRef = useRef<TargetPoint[][][]>([]);
+  const HISTORY_LIMIT = 50;
+
+  // collabState優先: collabがあればcollab側を使い、なければローカルstate
+  const metronomeOn = collabState?.metronomeOn ?? metronomeOnLocal;
+  const editMode = collabState?.editMode ?? editModeLocal;
+  const targetStrokes = collabState?.targetStrokes ?? targetStrokesLocal;
+  const semitoneHeight = collabState?.semitoneHeight ?? semitoneHeightLocal;
+
+  const setMetronomeOn = useCallback((v: boolean | ((prev: boolean) => boolean)) => {
+    const val = typeof v === "function" ? v(collabState?.metronomeOn ?? metronomeOnLocal) : v;
+    if (collabState) {
+      collabState.setMetronomeOn(val);
+    } else {
+      setMetronomeOnLocal(val);
+    }
+  }, [collabState, metronomeOnLocal]);
+
+  const setEditMode = useCallback((v: boolean | ((prev: boolean) => boolean)) => {
+    const val = typeof v === "function" ? v(collabState?.editMode ?? editModeLocal) : v;
+    if (collabState) {
+      collabState.setEditMode(val);
+    } else {
+      setEditModeLocal(val);
+    }
+  }, [collabState, editModeLocal]);
+
+  const setTargetStrokes = useCallback((strokes: TargetPoint[][]) => {
+    if (collabState) {
+      collabState.setTargetStrokes(strokes);
+    } else {
+      setTargetStrokesLocal(strokes);
+    }
+  }, [collabState]);
+
+  // ストローク確定時にhistoryに追加
+  const handleStrokeCommit = useCallback(() => {
+    strokeHistoryRef.current = [
+      ...strokeHistoryRef.current.slice(-(HISTORY_LIMIT - 1)),
+      targetStrokes,
+    ];
+    redoStackRef.current = [];
+  }, [targetStrokes]);
+
+  const handleUndo = useCallback(() => {
+    if (strokeHistoryRef.current.length === 0) return;
+    const prev = strokeHistoryRef.current.pop()!;
+    redoStackRef.current.push(targetStrokes);
+    setTargetStrokes(prev);
+  }, [targetStrokes, setTargetStrokes]);
+
+  const handleRedo = useCallback(() => {
+    if (redoStackRef.current.length === 0) return;
+    const next = redoStackRef.current.pop()!;
+    strokeHistoryRef.current.push(targetStrokes);
+    setTargetStrokes(next);
+  }, [targetStrokes, setTargetStrokes]);
+
+  const setSemitoneHeight = useCallback((v: number) => {
+    if (collabState) {
+      collabState.setSemitoneHeight(v);
+    } else {
+      setSemitoneHeightLocal(v);
+    }
+  }, [collabState]);
+
+  const setMidiTrack = useCallback((track: MidiTrack | null) => {
+    setMidiTrackLocal(track);
+  }, []);
+
+  // collabからMIDIファイルが来た場合にパース
+  const collabMidiFileRef = useRef<{ data: ArrayBuffer; fileName: string } | null>(null);
+  useEffect(() => {
+    if (!collabState?.midiFile) {
+      if (collabMidiFileRef.current !== null) {
+        // リモートでMIDIがクリアされた
+        collabMidiFileRef.current = null;
+        setMidiTrackLocal(null);
+        setMidiFileName(null);
+      }
+      return;
+    }
+    // 同じファイルなら再パースしない
+    if (collabMidiFileRef.current?.fileName === collabState.midiFile.fileName) return;
+
+    collabMidiFileRef.current = collabState.midiFile;
+    const { data, fileName } = collabState.midiFile;
+    (async () => {
+      try {
+        const { parseMidi } = await import("@/lib/midi/parser");
+        const track = parseMidi(data);
+        setMidiTrackLocal(track);
+        setMidiFileName(fileName);
+        setBpmInput(Math.round(track.bpm).toString());
+        setBpmError(null);
+      } catch {
+        setMidiError("リモートMIDIファイルの読み込みに失敗しました。");
+      }
+    })();
+  }, [collabState?.midiFile]);
 
   // BPM入力のバリデーション
   const handleBpmChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
@@ -65,7 +197,8 @@ export default function PitchMonitor() {
     }
 
     setBpmError(null);
-  }, []);
+    collabState?.setBpm(num);
+  }, [collabState]);
 
   // 小節数入力のバリデーション
   const handleBarsChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
@@ -89,11 +222,31 @@ export default function PitchMonitor() {
     }
 
     setBarsError(null);
-  }, []);
+    collabState?.setBars(num);
+  }, [collabState]);
+
+  // collabからのBPM/Bars変更をinputに反映
+  const prevCollabBpmRef = useRef(collabState?.bpm);
+  const prevCollabBarsRef = useRef(collabState?.bars);
+  useEffect(() => {
+    if (collabState && collabState.bpm !== prevCollabBpmRef.current) {
+      prevCollabBpmRef.current = collabState.bpm;
+      setBpmInput(String(collabState.bpm));
+      setBpmError(null);
+    }
+  }, [collabState?.bpm, collabState]);
+  useEffect(() => {
+    if (collabState && collabState.bars !== prevCollabBarsRef.current) {
+      prevCollabBarsRef.current = collabState.bars;
+      setBarsInput(String(collabState.bars));
+      setBarsError(null);
+    }
+  }, [collabState?.bars, collabState]);
 
   // 有効なBPM値を算出
   const effectiveBpm = (() => {
     if (midiTrack) return midiTrack.bpm;
+    if (collabState) return collabState.bpm;
     const num = parseInt(bpmInput, 10);
     if (!isNaN(num) && num >= 20 && num <= 300) return num;
     return 120;
@@ -101,10 +254,27 @@ export default function PitchMonitor() {
 
   // 有効な小節数を算出
   const effectiveBars = (() => {
+    if (collabState) return collabState.bars;
     const num = parseInt(barsInput, 10);
     if (!isNaN(num) && num >= 1 && num <= 32) return num;
     return 2;
   })();
+
+  // Undo/Redo キーボードショートカット
+  useEffect(() => {
+    if (!editMode) return;
+    const handler = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === "z" && !e.shiftKey) {
+        e.preventDefault();
+        handleUndo();
+      } else if ((e.ctrlKey || e.metaKey) && e.key === "z" && e.shiftKey) {
+        e.preventDefault();
+        handleRedo();
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [editMode, handleUndo, handleRedo]);
 
   // メトロノーム
   useMetronome(effectiveBpm, metronomeOn, elapsedTime);
@@ -119,10 +289,16 @@ export default function PitchMonitor() {
       setBpmInput(Math.round(track.bpm).toString());
       setBpmError(null);
       setScore(null);
+
+      // collabモード時はArrayBufferも送信
+      if (collabState) {
+        const arrayBuffer = await file.arrayBuffer();
+        collabState.uploadMidi(arrayBuffer, file.name);
+      }
     } catch {
       setMidiError("MIDIファイルの読み込みに失敗しました。");
     }
-  }, []);
+  }, [collabState]);
 
   // ドラッグ＆ドロップ
   const handleDragOver = useCallback((e: DragEvent) => {
@@ -202,6 +378,26 @@ export default function PitchMonitor() {
     setSaved(true);
   }, [score, midiTrack, midiFileName, elapsedTime, pitchHistory, save]);
 
+  // デモ曲ロード
+  const loadDemo = useCallback(async () => {
+    try {
+      const res = await fetch("/demo.mid");
+      const arrayBuffer = await res.arrayBuffer();
+      const { parseMidi } = await import("@/lib/midi/parser");
+      const track = parseMidi(arrayBuffer);
+      setMidiTrack(track);
+      setMidiFileName("demo.mid");
+      setBpmInput(Math.round(track.bpm).toString());
+      setBpmError(null);
+      setScore(null);
+      if (collabState) {
+        collabState.uploadMidi(arrayBuffer, "demo.mid");
+      }
+    } catch {
+      // デモ曲が見つからない場合は無視
+    }
+  }, [collabState, setMidiTrack]);
+
   // MIDIクリア
   const handleClearMidi = useCallback(() => {
     setMidiTrack(null);
@@ -209,10 +405,16 @@ export default function PitchMonitor() {
     setScore(null);
     setMidiError(null);
     setSaved(false);
-  }, []);
+    collabState?.clearMidi();
+  }, [collabState]);
 
   return (
     <div className="flex flex-col h-full gap-4">
+      <Onboarding onLoadDemo={loadDemo} />
+
+      {/* コラボステータスバー */}
+      {statusBar}
+
       {/* エラー表示 */}
       {(error || midiError) && (
         <div
@@ -386,6 +588,59 @@ export default function PitchMonitor() {
                 {editMode ? "EDIT" : "EDIT"}
               </span>
             </button>
+            {editMode && (
+              <>
+                <button
+                  onClick={() => setSnapToGrid((v) => !v)}
+                  className="w-full mt-1 py-1.5 rounded-lg flex items-center justify-center gap-2 transition-colors"
+                  style={{
+                    backgroundColor: snapToGrid
+                      ? "rgba(0, 200, 120, 0.15)"
+                      : "rgba(255, 255, 255, 0.04)",
+                    border: `1px solid ${snapToGrid ? "rgba(0, 200, 120, 0.3)" : "rgba(255, 255, 255, 0.08)"}`,
+                  }}
+                  title={snapToGrid ? "グリッドスナップ OFF" : "グリッドスナップ ON"}
+                >
+                  <span
+                    className="text-xs"
+                    style={{
+                      fontFamily: "monospace",
+                      color: snapToGrid ? "#00c878" : "#555555",
+                    }}
+                  >
+                    SNAP {snapToGrid ? "ON" : "OFF"}
+                  </span>
+                </button>
+                <div className="flex gap-1 mt-1">
+                  <button
+                    onClick={handleUndo}
+                    className="flex-1 py-1.5 rounded-lg text-xs transition-colors"
+                    style={{
+                      fontFamily: "monospace",
+                      backgroundColor: "rgba(255, 255, 255, 0.04)",
+                      border: "1px solid rgba(255, 255, 255, 0.08)",
+                      color: strokeHistoryRef.current.length > 0 ? "#888888" : "#333333",
+                    }}
+                    title="Undo (Ctrl+Z)"
+                  >
+                    Undo
+                  </button>
+                  <button
+                    onClick={handleRedo}
+                    className="flex-1 py-1.5 rounded-lg text-xs transition-colors"
+                    style={{
+                      fontFamily: "monospace",
+                      backgroundColor: "rgba(255, 255, 255, 0.04)",
+                      border: "1px solid rgba(255, 255, 255, 0.08)",
+                      color: redoStackRef.current.length > 0 ? "#888888" : "#333333",
+                    }}
+                    title="Redo (Ctrl+Shift+Z)"
+                  >
+                    Redo
+                  </button>
+                </div>
+              </>
+            )}
           </div>
 
           {/* 下部固定: スコア + ボタン */}
@@ -463,6 +718,11 @@ export default function PitchMonitor() {
               targetStrokes={targetStrokes}
               onTargetStrokesChange={setTargetStrokes}
               semitoneHeight={semitoneHeight}
+              snapToGrid={snapToGrid}
+              onStrokeCommit={handleStrokeCommit}
+              remoteCursors={collabState?.remoteCursors}
+              onCursorMove={collabState?.sendCursorMove}
+              localUserId={collabState?.userId ?? null}
             />
           </div>
 
