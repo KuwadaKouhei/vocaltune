@@ -14,6 +14,8 @@ import ScoreDisplay from "./ScoreDisplay";
 import Image from "next/image";
 import type { RemoteCursor } from "@/lib/collab/types";
 import Onboarding from "./Onboarding";
+import CalibrationModal from "./CalibrationModal";
+import type { CalibrationResult } from "@/hooks/useCalibration";
 
 export interface PitchMonitorProps {
   /** 共同編集モード時の外部状態 */
@@ -42,6 +44,9 @@ export interface PitchMonitorProps {
 }
 
 export default function PitchMonitor({ collabState, statusBar }: PitchMonitorProps = {}) {
+  const [calibratedThreshold, setCalibratedThreshold] = useState<number | undefined>(undefined);
+  const [showCalibration, setShowCalibration] = useState(false);
+
   const {
     isListening,
     currentNote,
@@ -52,7 +57,7 @@ export default function PitchMonitor({ collabState, statusBar }: PitchMonitorPro
     stopListening,
     resetSession,
     error,
-  } = usePitchDetection();
+  } = usePitchDetection(calibratedThreshold);
 
   const { save } = useRecordings();
 
@@ -341,6 +346,26 @@ export default function PitchMonitor({ collabState, statusBar }: PitchMonitorPro
     setScore(result);
   }, [midiTrack, timestampedPitches]);
 
+  // キャリブレーション完了ハンドラ
+  const handleCalibrationComplete = useCallback((result: CalibrationResult) => {
+    setCalibratedThreshold(result.threshold);
+    setShowCalibration(false);
+    // キャリブレーション後に自動でSTART
+    setScore(null);
+    setSaved(false);
+    resetSession();
+    startListening();
+  }, [resetSession, startListening]);
+
+  const handleCalibrationSkip = useCallback(() => {
+    setShowCalibration(false);
+    // デフォルト閾値のままSTART
+    setScore(null);
+    setSaved(false);
+    resetSession();
+    startListening();
+  }, [resetSession, startListening]);
+
   // START / STOP
   const handleToggle = useCallback(() => {
     if (isListening) {
@@ -352,12 +377,17 @@ export default function PitchMonitor({ collabState, statusBar }: PitchMonitorPro
         }, 50);
       }
     } else {
-      setScore(null);
-      setSaved(false);
-      resetSession();
-      startListening();
+      // 未キャリブレーションならキャリブレーションを開始
+      if (calibratedThreshold === undefined) {
+        setShowCalibration(true);
+      } else {
+        setScore(null);
+        setSaved(false);
+        resetSession();
+        startListening();
+      }
     }
-  }, [isListening, stopListening, startListening, resetSession, midiTrack, handleScore]);
+  }, [isListening, stopListening, startListening, resetSession, midiTrack, handleScore, calibratedThreshold]);
 
   // 録音保存
   const handleSave = useCallback(async () => {
@@ -410,6 +440,15 @@ export default function PitchMonitor({ collabState, statusBar }: PitchMonitorPro
 
   return (
     <div className="flex flex-col h-full gap-4">
+      {/* キャリブレーションモーダル */}
+      {showCalibration && (
+        <CalibrationModal
+          onComplete={handleCalibrationComplete}
+          onSkip={handleCalibrationSkip}
+          onClose={() => setShowCalibration(false)}
+        />
+      )}
+
       <Onboarding onLoadDemo={loadDemo} />
 
       {/* コラボステータスバー */}
@@ -655,6 +694,26 @@ export default function PitchMonitor({ collabState, statusBar }: PitchMonitorPro
               >
                 {formatTime(elapsedTime)}
               </div>
+            )}
+
+            {/* キャリブレーション状態表示 */}
+            {calibratedThreshold !== undefined && !isListening && (
+              <button
+                onClick={() => {
+                  setCalibratedThreshold(undefined);
+                  setShowCalibration(true);
+                }}
+                className="w-full py-1.5 rounded-lg text-[10px] tracking-wider transition-colors cursor-pointer"
+                style={{
+                  fontFamily: "monospace",
+                  backgroundColor: "rgba(255, 200, 0, 0.06)",
+                  border: "1px solid rgba(255, 200, 0, 0.12)",
+                  color: "#998200",
+                }}
+                title="マイクキャリブレーションを再実行"
+              >
+                MIC CAL: {calibratedThreshold.toFixed(5)} ↻
+              </button>
             )}
 
             <button

@@ -5,10 +5,12 @@
       "Bash(npx next:*)",
       "Bash(node -e ':*)",
       "Bash(node -e \"const { Midi } = require\\('@tonejs/midi'\\); console.log\\('ok', typeof Midi\\);\")",
-      "Bash(node -e \"const { Midi } = require\\('@tonejs/midi'\\); const fs = require\\('fs'\\); const midi = new Midi\\(\\); const track = midi.addTrack\\(\\); track.name = 'Demo'; [60,62,64,65,67,69,71,72].forEach\\(\\(n,i\\) => track.addNote\\({midi:n, time:i*0.5, duration:0.45, velocity:0.8}\\)\\); midi.header.setTempo\\(100\\); const b = Buffer.from\\(midi.toArray\\(\\)\\); fs.writeFileSync\\('public/demo.mid', b\\); console.log\\(b.length\\);\")"
+      "Bash(node -e \"const { Midi } = require\\('@tonejs/midi'\\); const fs = require\\('fs'\\); const midi = new Midi\\(\\); const track = midi.addTrack\\(\\); track.name = 'Demo'; [60,62,64,65,67,69,71,72].forEach\\(\\(n,i\\) => track.addNote\\({midi:n, time:i*0.5, duration:0.45, velocity:0.8}\\)\\); midi.header.setTempo\\(100\\); const b = Buffer.from\\(midi.toArray\\(\\)\\); fs.writeFileSync\\('public/demo.mid', b\\); console.log\\(b.length\\);\")",
+      "Read(//d/training2/**)"
     ],
     "additionalDirectories": [
-      "d:\\training2\\vocaltune\\src\\app\\room"
+      "d:\\training2\\vocaltune\\src\\app\\room",
+      "d:\\training2"
     ]
   }
 }

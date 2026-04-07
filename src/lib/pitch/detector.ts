@@ -3,7 +3,7 @@ import type { PitchResult } from "./types";
 const FFT_SIZE = 4096;
 const MIN_FREQ = 60; // C2相当
 const MAX_FREQ = 1200; // C6相当
-const RMS_THRESHOLD = 0.0001;
+const DEFAULT_RMS_THRESHOLD = 0.0001;
 const YIN_THRESHOLD = 0.25;
 
 /**
@@ -30,10 +30,11 @@ function calculateRMS(buffer: Float32Array): number {
  */
 export function detectPitch(
   buffer: Float32Array,
-  sampleRate: number
+  sampleRate: number,
+  rmsThreshold: number = DEFAULT_RMS_THRESHOLD
 ): PitchResult | null {
   // 1. 無音判定
-  if (calculateRMS(buffer) < RMS_THRESHOLD) {
+  if (calculateRMS(buffer) < rmsThreshold) {
     return null;
   }
 
@@ -120,4 +121,4 @@ function parabolicInterpolation(array: Float32Array, tau: number): number {
   return tau + adjustment;
 }
 
-export { FFT_SIZE };
+export { FFT_SIZE, DEFAULT_RMS_THRESHOLD, calculateRMS };

@@ -30,7 +30,7 @@ export interface UsePitchDetectionReturn {
   error: string | null;
 }
 
-export function usePitchDetection(): UsePitchDetectionReturn {
+export function usePitchDetection(rmsThreshold?: number): UsePitchDetectionReturn {
   const [isListening, setIsListening] = useState(false);
   const [currentNote, setCurrentNote] = useState<NoteInfo | null>(null);
   const [pitchHistory, setPitchHistory] = useState<(number | null)[]>([]);
@@ -91,7 +91,7 @@ export function usePitchDetection(): UsePitchDetectionReturn {
         const elapsed = (now - startTimeRef.current) / 1000;
 
         mic.analyser.getFloatTimeDomainData(buffer);
-        const result = detectPitch(buffer, mic.audioContext.sampleRate);
+        const result = detectPitch(buffer, mic.audioContext.sampleRate, rmsThreshold);
 
         // メディアンフィルタでジッター除去
         const rawFreq = result ? result.frequency : null;
