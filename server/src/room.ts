@@ -34,6 +34,7 @@ export class RoomManager {
       users: [],
       state: createDefaultState(),
       createdAt: Date.now(),
+      recordingUserId: null,
     };
     this.rooms.set(id, room);
     return id;
@@ -62,7 +63,7 @@ export class RoomManager {
     return { ok: true, state: room.state, userId, users: room.users };
   }
 
-  leaveRoom(socketId: string): { roomId: string; userId: string; userCount: number } | null {
+  leaveRoom(socketId: string): { roomId: string; userId: string; userCount: number; wasRecording: boolean } | null {
     const roomId = this.socketToRoom.get(socketId);
     if (!roomId) return null;
 
@@ -78,10 +79,16 @@ export class RoomManager {
       return null;
     }
 
+    // 録音中のユーザーが退出した場合はリセット
+    const wasRecording = room.recordingUserId === user.userId;
+    if (wasRecording) {
+      room.recordingUserId = null;
+    }
+
     room.users = room.users.filter((u) => u.socketId !== socketId);
     this.socketToRoom.delete(socketId);
 
-    return { roomId, userId: user.userId, userCount: room.users.length };
+    return { roomId, userId: user.userId, userCount: room.users.length, wasRecording };
   }
 
   updateScalar(socketId: string, key: ScalarStateKey, value: number | boolean): { roomId: string; userId: string } | null {
@@ -142,6 +149,36 @@ export class RoomManager {
 
     room.state.midiFile = null;
 
+    return { roomId, userId: user.userId };
+  }
+
+  startRecording(socketId: string): { roomId: string; userId: string } | null {
+    const roomId = this.socketToRoom.get(socketId);
+    if (!roomId) return null;
+
+    const room = this.rooms.get(roomId);
+    if (!room) return null;
+
+    const user = room.users.find((u) => u.socketId === socketId);
+    if (!user) return null;
+
+    room.recordingUserId = user.userId;
+    return { roomId, userId: user.userId };
+  }
+
+  stopRecording(socketId: string): { roomId: string; userId: string } | null {
+    const roomId = this.socketToRoom.get(socketId);
+    if (!roomId) return null;
+
+    const room = this.rooms.get(roomId);
+    if (!room) return null;
+
+    const user = room.users.find((u) => u.socketId === socketId);
+    if (!user) return null;
+
+    if (room.recordingUserId === user.userId) {
+      room.recordingUserId = null;
+    }
     return { roomId, userId: user.userId };
   }
 

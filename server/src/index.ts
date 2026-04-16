@@ -104,6 +104,39 @@ io.on("connection", (socket) => {
     }
   });
 
+  // --- 録音同期 ---
+
+  socket.on("recording:start", () => {
+    const info = rooms.startRecording(socket.id);
+    if (info) {
+      socket.to(info.roomId).emit("recording:started", {
+        userId: info.userId,
+      });
+      console.log(`[recording:start] room=${info.roomId} user=${info.userId}`);
+    }
+  });
+
+  socket.on("recording:stop", () => {
+    const info = rooms.stopRecording(socket.id);
+    if (info) {
+      socket.to(info.roomId).emit("recording:stopped", {
+        userId: info.userId,
+      });
+      console.log(`[recording:stop] room=${info.roomId} user=${info.userId}`);
+    }
+  });
+
+  socket.on("recording:pitch", (data) => {
+    const userInfo = rooms.getUserInfo(socket.id);
+    if (userInfo) {
+      socket.to(userInfo.roomId).emit("recording:pitch", {
+        userId: userInfo.userId,
+        pitches: data.pitches,
+        elapsedTime: data.elapsedTime,
+      });
+    }
+  });
+
   // --- カーソル同期 ---
 
   socket.on("cursor:move", (data) => {
@@ -127,6 +160,12 @@ io.on("connection", (socket) => {
   function handleLeave() {
     const result = rooms.leaveRoom(socket.id);
     if (result) {
+      // 録音中のユーザーが退出した場合は録音停止を通知
+      if (result.wasRecording) {
+        socket.to(result.roomId).emit("recording:stopped", {
+          userId: result.userId,
+        });
+      }
       socket.to(result.roomId).emit("room:user-left", {
         userId: result.userId,
         userCount: result.userCount,

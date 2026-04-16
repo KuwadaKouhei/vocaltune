@@ -30,6 +30,10 @@ export default function CollabPitchMonitor({ roomId }: CollabPitchMonitorProps) 
     sendCursorMove: collab.sendCursorMove,
     remoteCursors: collab.remoteCursors,
     userId: collab.userId,
+    remoteRecording: collab.remoteRecording,
+    emitRecordingStart: collab.emitRecordingStart,
+    emitRecordingStop: collab.emitRecordingStop,
+    emitRecordingPitch: collab.emitRecordingPitch,
   };
 
   return (

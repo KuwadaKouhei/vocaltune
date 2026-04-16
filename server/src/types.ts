@@ -4,6 +4,12 @@ export interface TargetPoint {
   midi: number;
 }
 
+/** タイムスタンプ付きピッチデータ */
+export interface PitchPoint {
+  time: number;
+  frequency: number | null;
+}
+
 /** ルームの同期状態 */
 export interface RoomState {
   bpm: number;
@@ -31,6 +37,8 @@ export interface Room {
   users: RoomUser[];
   state: RoomState;
   createdAt: number;
+  /** 現在録音中のユーザーID（null=誰も録音していない） */
+  recordingUserId: string | null;
 }
 
 // --- Socket.io イベント型 ---
@@ -44,6 +52,9 @@ export interface ClientToServerEvents {
   "midi:upload": (data: { data: ArrayBuffer; fileName: string }) => void;
   "midi:clear": () => void;
   "cursor:move": (data: { point: TargetPoint }) => void;
+  "recording:start": () => void;
+  "recording:stop": () => void;
+  "recording:pitch": (data: { pitches: PitchPoint[]; elapsedTime: number }) => void;
 }
 
 export interface ServerToClientEvents {
@@ -54,4 +65,7 @@ export interface ServerToClientEvents {
   "midi:uploaded": (data: { data: ArrayBuffer; fileName: string; userId: string }) => void;
   "midi:cleared": (data: { userId: string }) => void;
   "cursor:moved": (data: { userId: string; point: TargetPoint; color: string }) => void;
+  "recording:started": (data: { userId: string }) => void;
+  "recording:stopped": (data: { userId: string }) => void;
+  "recording:pitch": (data: { userId: string; pitches: PitchPoint[]; elapsedTime: number }) => void;
 }

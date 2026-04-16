@@ -4,9 +4,18 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { getSocket, disconnectSocket } from "@/lib/collab/socket";
 import type { RoomState, RoomUser, ScalarStateKey, RemoteCursor } from "@/lib/collab/types";
 import type { TargetPoint } from "@/components/PitchCanvas";
+import type { TimestampedPitch } from "@/lib/scoring/engine";
 
 interface UseCollaborationOptions {
   roomId: string;
+}
+
+/** リモート録音状態 */
+export interface RemoteRecording {
+  active: boolean;
+  userId: string;
+  pitches: TimestampedPitch[];
+  elapsedTime: number;
 }
 
 interface UseCollaborationReturn {
@@ -20,6 +29,8 @@ interface UseCollaborationReturn {
   error: string | null;
   /** リモートカーソル */
   remoteCursors: RemoteCursor[];
+  /** リモート録音状態 */
+  remoteRecording: RemoteRecording | null;
 
   // 同期された状態
   bpm: number;
@@ -40,6 +51,9 @@ interface UseCollaborationReturn {
   uploadMidi: (data: ArrayBuffer, fileName: string) => void;
   clearMidi: () => void;
   sendCursorMove: (point: TargetPoint) => void;
+  emitRecordingStart: () => void;
+  emitRecordingStop: () => void;
+  emitRecordingPitch: (pitches: TimestampedPitch[], elapsedTime: number) => void;
 }
 
 export function useCollaboration({ roomId }: UseCollaborationOptions): UseCollaborationReturn {
@@ -57,6 +71,8 @@ export function useCollaboration({ roomId }: UseCollaborationOptions): UseCollab
   const [editMode, setEditModeLocal] = useState(false);
   const [targetStrokes, setTargetStrokesLocal] = useState<TargetPoint[][]>([]);
   const [midiFile, setMidiFile] = useState<{ data: ArrayBuffer; fileName: string } | null>(null);
+  const [remoteRecording, setRemoteRecording] = useState<RemoteRecording | null>(null);
+  const remotePitchesRef = useRef<TimestampedPitch[]>([]);
 
   // リモートからの更新中かどうかのフラグ（ループ防止）
   const isRemoteUpdateRef = useRef(false);
@@ -157,6 +173,39 @@ export function useCollaboration({ roomId }: UseCollaborationOptions): UseCollab
       });
     });
 
+    socket.on("recording:started", (data) => {
+      remotePitchesRef.current = [];
+      setRemoteRecording({
+        active: true,
+        userId: data.userId,
+        pitches: [],
+        elapsedTime: 0,
+      });
+    });
+
+    socket.on("recording:stopped", (data) => {
+      setRemoteRecording((prev) => {
+        if (prev && prev.userId === data.userId) {
+          return { ...prev, active: false };
+        }
+        return prev;
+      });
+    });
+
+    socket.on("recording:pitch", (data) => {
+      remotePitchesRef.current = [...remotePitchesRef.current, ...data.pitches];
+      setRemoteRecording((prev) => {
+        if (prev && prev.userId === data.userId) {
+          return {
+            ...prev,
+            pitches: remotePitchesRef.current,
+            elapsedTime: data.elapsedTime,
+          };
+        }
+        return prev;
+      });
+    });
+
     socket.connect();
 
     return () => {
@@ -170,6 +219,9 @@ export function useCollaboration({ roomId }: UseCollaborationOptions): UseCollab
       socket.off("midi:uploaded");
       socket.off("midi:cleared");
       socket.off("cursor:moved");
+      socket.off("recording:started");
+      socket.off("recording:stopped");
+      socket.off("recording:pitch");
       disconnectSocket();
     };
   }, [roomId]);
@@ -253,12 +305,37 @@ export function useCollaboration({ roomId }: UseCollaborationOptions): UseCollab
     }
   }, []);
 
+  // 録音開始通知
+  const emitRecordingStart = useCallback(() => {
+    const socket = getSocket();
+    if (socket.connected) {
+      socket.emit("recording:start");
+    }
+  }, []);
+
+  // 録音停止通知
+  const emitRecordingStop = useCallback(() => {
+    const socket = getSocket();
+    if (socket.connected) {
+      socket.emit("recording:stop");
+    }
+  }, []);
+
+  // ピッチデータ送信（増分）
+  const emitRecordingPitch = useCallback((pitches: TimestampedPitch[], elapsedTime: number) => {
+    const socket = getSocket();
+    if (socket.connected) {
+      socket.emit("recording:pitch", { pitches, elapsedTime });
+    }
+  }, []);
+
   return {
     isConnected,
     userId,
     userCount,
     error,
     remoteCursors,
+    remoteRecording,
     bpm,
     bars,
     semitoneHeight,
@@ -275,5 +352,8 @@ export function useCollaboration({ roomId }: UseCollaborationOptions): UseCollab
     uploadMidi,
     clearMidi,
     sendCursorMove,
+    emitRecordingStart,
+    emitRecordingStop,
+    emitRecordingPitch,
   };
 }

@@ -1,4 +1,5 @@
 import type { TargetPoint } from "@/components/PitchCanvas";
+import type { TimestampedPitch } from "@/lib/scoring/engine";
 
 /** ルームの同期状態 */
 export interface RoomState {
@@ -37,6 +38,9 @@ export interface ServerToClientEvents {
   "midi:uploaded": (data: { data: ArrayBuffer; fileName: string; userId: string }) => void;
   "midi:cleared": (data: { userId: string }) => void;
   "cursor:moved": (data: { userId: string; point: TargetPoint; color: string }) => void;
+  "recording:started": (data: { userId: string }) => void;
+  "recording:stopped": (data: { userId: string }) => void;
+  "recording:pitch": (data: { userId: string; pitches: TimestampedPitch[]; elapsedTime: number }) => void;
 }
 
 /** クライアントからサーバーへのイベント */
@@ -49,4 +53,7 @@ export interface ClientToServerEvents {
   "midi:upload": (data: { data: ArrayBuffer; fileName: string }) => void;
   "midi:clear": () => void;
   "cursor:move": (data: { point: TargetPoint }) => void;
+  "recording:start": () => void;
+  "recording:stop": () => void;
+  "recording:pitch": (data: { pitches: TimestampedPitch[]; elapsedTime: number }) => void;
 }

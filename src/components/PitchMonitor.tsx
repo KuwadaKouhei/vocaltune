@@ -6,7 +6,8 @@ import { useRecordings } from "@/hooks/useRecordings";
 import { parseMidiFile } from "@/lib/midi/parser";
 import { calculateScore } from "@/lib/scoring/engine";
 import type { MidiTrack } from "@/lib/midi/types";
-import type { SessionScore } from "@/lib/scoring/engine";
+import type { SessionScore, TimestampedPitch } from "@/lib/scoring/engine";
+import type { RemoteRecording } from "@/hooks/useCollaboration";
 import { useMetronome } from "@/hooks/useMetronome";
 import PitchCanvas, { type TargetPoint } from "./PitchCanvas";
 import NoteDisplay from "./NoteDisplay";
@@ -38,6 +39,10 @@ export interface PitchMonitorProps {
     sendCursorMove?: (point: TargetPoint) => void;
     remoteCursors?: RemoteCursor[];
     userId?: string | null;
+    remoteRecording?: RemoteRecording | null;
+    emitRecordingStart?: () => void;
+    emitRecordingStop?: () => void;
+    emitRecordingPitch?: (pitches: TimestampedPitch[], elapsedTime: number) => void;
   };
   /** ヘッダー上部に追加表示するノード */
   statusBar?: React.ReactNode;
@@ -77,11 +82,6 @@ export default function PitchMonitor({ collabState, statusBar }: PitchMonitorPro
   const [semitoneHeightLocal, setSemitoneHeightLocal] = useState(16);
   const [snapToGrid, setSnapToGrid] = useState(false);
 
-  // Undo/Redo
-  const strokeHistoryRef = useRef<TargetPoint[][][]>([]);
-  const redoStackRef = useRef<TargetPoint[][][]>([]);
-  const HISTORY_LIMIT = 50;
-
   // collabState優先: collabがあればcollab側を使い、なければローカルstate
   const metronomeOn = collabState?.metronomeOn ?? metronomeOnLocal;
   const editMode = collabState?.editMode ?? editModeLocal;
@@ -113,29 +113,6 @@ export default function PitchMonitor({ collabState, statusBar }: PitchMonitorPro
       setTargetStrokesLocal(strokes);
     }
   }, [collabState]);
-
-  // ストローク確定時にhistoryに追加
-  const handleStrokeCommit = useCallback(() => {
-    strokeHistoryRef.current = [
-      ...strokeHistoryRef.current.slice(-(HISTORY_LIMIT - 1)),
-      targetStrokes,
-    ];
-    redoStackRef.current = [];
-  }, [targetStrokes]);
-
-  const handleUndo = useCallback(() => {
-    if (strokeHistoryRef.current.length === 0) return;
-    const prev = strokeHistoryRef.current.pop()!;
-    redoStackRef.current.push(targetStrokes);
-    setTargetStrokes(prev);
-  }, [targetStrokes, setTargetStrokes]);
-
-  const handleRedo = useCallback(() => {
-    if (redoStackRef.current.length === 0) return;
-    const next = redoStackRef.current.pop()!;
-    strokeHistoryRef.current.push(targetStrokes);
-    setTargetStrokes(next);
-  }, [targetStrokes, setTargetStrokes]);
 
   const setSemitoneHeight = useCallback((v: number) => {
     if (collabState) {
@@ -264,22 +241,6 @@ export default function PitchMonitor({ collabState, statusBar }: PitchMonitorPro
     if (!isNaN(num) && num >= 1 && num <= 32) return num;
     return 2;
   })();
-
-  // Undo/Redo キーボードショートカット
-  useEffect(() => {
-    if (!editMode) return;
-    const handler = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === "z" && !e.shiftKey) {
-        e.preventDefault();
-        handleUndo();
-      } else if ((e.ctrlKey || e.metaKey) && e.key === "z" && e.shiftKey) {
-        e.preventDefault();
-        handleRedo();
-      }
-    };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-  }, [editMode, handleUndo, handleRedo]);
 
   // メトロノーム
   useMetronome(effectiveBpm, metronomeOn, elapsedTime);
@@ -438,6 +399,55 @@ export default function PitchMonitor({ collabState, statusBar }: PitchMonitorPro
     collabState?.clearMidi();
   }, [collabState]);
 
+  // === コラボ録音同期 ===
+  // リモートの録音状態（自分は録音していない場合のみ有効）
+  const remoteRec = collabState?.remoteRecording;
+  const isViewingRemote = !!(remoteRec?.active && !isListening);
+
+  // 録音中のピッチデータをリモートに送信（100msスロットル）
+  const lastSentIndexRef = useRef(0);
+  const timestampedPitchesRef = useRef(timestampedPitches);
+  timestampedPitchesRef.current = timestampedPitches;
+  const elapsedTimeRef = useRef(elapsedTime);
+  elapsedTimeRef.current = elapsedTime;
+
+  useEffect(() => {
+    if (!isListening || !collabState?.emitRecordingPitch) return;
+
+    lastSentIndexRef.current = 0;
+    collabState.emitRecordingStart?.();
+
+    const interval = setInterval(() => {
+      const pitches = timestampedPitchesRef.current;
+      const newPitches = pitches.slice(lastSentIndexRef.current);
+      if (newPitches.length > 0) {
+        collabState.emitRecordingPitch?.(newPitches, elapsedTimeRef.current);
+        lastSentIndexRef.current = pitches.length;
+      }
+    }, 100);
+
+    return () => {
+      clearInterval(interval);
+      collabState.emitRecordingStop?.();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isListening, !!collabState]);
+
+  // リモート録音時のピッチ履歴を導出（auto-scroll用）
+  const remotePitchHistory: (number | null)[] = (() => {
+    if (!isViewingRemote || !remoteRec) return [];
+    const pitches = remoteRec.pitches;
+    const recent = pitches.slice(-200);
+    return recent.map((p) => p.frequency);
+  })();
+
+  // PitchCanvasに渡すデータソースの選択
+  const canvasPitchHistory = isViewingRemote ? remotePitchHistory : pitchHistory;
+  const canvasTimestampedPitches = isViewingRemote ? (remoteRec?.pitches ?? []) : timestampedPitches;
+  const canvasElapsedTime = isViewingRemote ? (remoteRec?.elapsedTime ?? 0) : elapsedTime;
+  // 録音中（自分orリモート）かどうか
+  const isRecordingActive = isListening || isViewingRemote;
+
   return (
     <div className="flex flex-col h-full gap-4">
       {/* キャリブレーションモーダル */}
@@ -493,7 +503,7 @@ export default function PitchMonitor({ collabState, statusBar }: PitchMonitorPro
               inputMode="numeric"
               value={bpmInput}
               onChange={handleBpmChange}
-              disabled={isListening}
+              disabled={isRecordingActive}
               className="w-full px-3 py-2 rounded-lg text-sm text-center"
               style={{
                 fontFamily: "monospace",
@@ -523,7 +533,7 @@ export default function PitchMonitor({ collabState, statusBar }: PitchMonitorPro
               inputMode="numeric"
               value={barsInput}
               onChange={handleBarsChange}
-              disabled={isListening}
+              disabled={isRecordingActive}
               className="w-full px-3 py-2 rounded-lg text-sm text-center"
               style={{
                 fontFamily: "monospace",
@@ -650,34 +660,6 @@ export default function PitchMonitor({ collabState, statusBar }: PitchMonitorPro
                     SNAP {snapToGrid ? "ON" : "OFF"}
                   </span>
                 </button>
-                <div className="flex gap-1 mt-1">
-                  <button
-                    onClick={handleUndo}
-                    className="flex-1 py-1.5 rounded-lg text-xs transition-colors"
-                    style={{
-                      fontFamily: "monospace",
-                      backgroundColor: "rgba(255, 255, 255, 0.04)",
-                      border: "1px solid rgba(255, 255, 255, 0.08)",
-                      color: strokeHistoryRef.current.length > 0 ? "#888888" : "#333333",
-                    }}
-                    title="Undo (Ctrl+Z)"
-                  >
-                    Undo
-                  </button>
-                  <button
-                    onClick={handleRedo}
-                    className="flex-1 py-1.5 rounded-lg text-xs transition-colors"
-                    style={{
-                      fontFamily: "monospace",
-                      backgroundColor: "rgba(255, 255, 255, 0.04)",
-                      border: "1px solid rgba(255, 255, 255, 0.08)",
-                      color: redoStackRef.current.length > 0 ? "#888888" : "#333333",
-                    }}
-                    title="Redo (Ctrl+Shift+Z)"
-                  >
-                    Redo
-                  </button>
-                </div>
               </>
             )}
           </div>
@@ -687,17 +669,33 @@ export default function PitchMonitor({ collabState, statusBar }: PitchMonitorPro
             {/* スコア表示 */}
             {score && <ScoreDisplay score={score} />}
             {/* 経過時間 */}
-            {(isListening || elapsedTime > 0) && (
+            {(isRecordingActive || elapsedTime > 0) && (
               <div
                 className="text-center text-xs"
                 style={{ color: "#555555", fontFamily: "monospace" }}
               >
-                {formatTime(elapsedTime)}
+                {formatTime(canvasElapsedTime)}
+              </div>
+            )}
+
+            {/* リモート録音中表示 */}
+            {isViewingRemote && (
+              <div
+                className="text-center text-xs py-2"
+                style={{
+                  fontFamily: "monospace",
+                  color: "#00e5ff",
+                  backgroundColor: "rgba(0, 229, 255, 0.08)",
+                  border: "1px solid rgba(0, 229, 255, 0.15)",
+                  borderRadius: "8px",
+                }}
+              >
+                ● LIVE
               </div>
             )}
 
             {/* キャリブレーション状態表示 */}
-            {calibratedThreshold !== undefined && !isListening && (
+            {calibratedThreshold !== undefined && !isListening && !isViewingRemote && (
               <button
                 onClick={() => {
                   setCalibratedThreshold(undefined);
@@ -716,20 +714,22 @@ export default function PitchMonitor({ collabState, statusBar }: PitchMonitorPro
               </button>
             )}
 
-            <button
-              onClick={handleToggle}
-              className="w-full py-3 rounded-lg text-sm font-bold tracking-wider transition-colors"
-              style={{
-                fontFamily: "monospace",
-                backgroundColor: isListening
-                  ? "rgba(255, 61, 113, 0.15)"
-                  : "rgba(0, 229, 255, 0.15)",
-                border: `1px solid ${isListening ? "rgba(255, 61, 113, 0.3)" : "rgba(0, 229, 255, 0.3)"}`,
-                color: isListening ? "#ff3d71" : "#00e5ff",
-              }}
-            >
-              {isListening ? "■ STOP" : "● START"}
-            </button>
+            {!isViewingRemote && (
+              <button
+                onClick={handleToggle}
+                className="w-full py-3 rounded-lg text-sm font-bold tracking-wider transition-colors"
+                style={{
+                  fontFamily: "monospace",
+                  backgroundColor: isListening
+                    ? "rgba(255, 61, 113, 0.15)"
+                    : "rgba(0, 229, 255, 0.15)",
+                  border: `1px solid ${isListening ? "rgba(255, 61, 113, 0.3)" : "rgba(0, 229, 255, 0.3)"}`,
+                  color: isListening ? "#ff3d71" : "#00e5ff",
+                }}
+              >
+                {isListening ? "■ STOP" : "● START"}
+              </button>
+            )}
 
             {/* 保存ボタン（スコアがあり、未保存のときのみ表示） */}
             {score && !isListening && !saved && (
@@ -767,10 +767,10 @@ export default function PitchMonitor({ collabState, statusBar }: PitchMonitorPro
             }}
           >
             <PitchCanvas
-              pitchHistory={pitchHistory}
-              timestampedPitches={timestampedPitches}
+              pitchHistory={canvasPitchHistory}
+              timestampedPitches={canvasTimestampedPitches}
               midiNotes={midiTrack?.notes}
-              elapsedTime={elapsedTime}
+              elapsedTime={canvasElapsedTime}
               bpm={effectiveBpm}
               bars={effectiveBars}
               editMode={editMode}
@@ -778,7 +778,6 @@ export default function PitchMonitor({ collabState, statusBar }: PitchMonitorPro
               onTargetStrokesChange={setTargetStrokes}
               semitoneHeight={semitoneHeight}
               snapToGrid={snapToGrid}
-              onStrokeCommit={handleStrokeCommit}
               remoteCursors={collabState?.remoteCursors}
               onCursorMove={collabState?.sendCursorMove}
               localUserId={collabState?.userId ?? null}

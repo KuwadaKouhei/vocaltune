@@ -37,8 +37,6 @@ interface PitchCanvasProps {
   semitoneHeight?: number;
   /** 拍グリッドにスナップするか */
   snapToGrid?: boolean;
-  /** ストローク確定時のコールバック（Undo/Redo用） */
-  onStrokeCommit?: () => void;
   /** リモートカーソル（共同編集時） */
   remoteCursors?: RemoteCursorData[];
   /** カーソル移動コールバック（共同編集時） */
@@ -77,7 +75,6 @@ export default function PitchCanvas({
   onTargetStrokesChange,
   semitoneHeight = SEMITONE_HEIGHT,
   snapToGrid = false,
-  onStrokeCommit,
   remoteCursors,
   onCursorMove,
   localUserId,
@@ -92,6 +89,9 @@ export default function PitchCanvas({
   // 編集用: ドラッグ中フラグ & 現在描画中のストローク
   const isDrawingRef = useRef(false);
   const currentStrokeRef = useRef<TargetPoint[]>([]);
+  // スナップモードでのクリック防止用
+  const hasDraggedRef = useRef(false);
+  const pendingPointRef = useRef<TargetPoint | null>(null);
 
   // 描画ループ内で使う座標変換関数をrefで共有（マウスイベントから参照）
   const centerRef = useRef(DEFAULT_CENTER);
@@ -152,17 +152,93 @@ export default function PitchCanvas({
     return { xRatio, midi };
   }, [semitoneHeight, snapToGrid, bars]);
 
-  // 既存ストロークからxRatio範囲が重複する部分を除去
+  // 既存ストロークからxRatio範囲が消去範囲と重複する部分を除去
+  // ポイント間のセグメント（隣接2点間の視覚的矩形）が消去範囲と重なる場合、
+  // そのセグメントに関わるポイントも除去する
   const eraseOverlap = useCallback((strokes: TargetPoint[][], xMin: number, xMax: number): TargetPoint[][] => {
     const result: TargetPoint[][] = [];
     for (const stroke of strokes) {
-      // 重複しないポイントだけ残す（連続する非重複部分を別ストロークに分割）
+      if (stroke.length === 0) continue;
+
+      // 各ポイントを消去するかどうかのフラグ
+      const remove = new Array(stroke.length).fill(false);
+
+      for (let i = 0; i < stroke.length; i++) {
+        const p = stroke[i];
+        // ポイント自体が消去範囲内
+        if (p.xRatio >= xMin && p.xRatio <= xMax) {
+          remove[i] = true;
+          continue;
+        }
+        // 隣接ポイントとのセグメントが消去範囲と重複するかチェック
+        if (i + 1 < stroke.length) {
+          const next = stroke[i + 1];
+          const segL = Math.min(p.xRatio, next.xRatio);
+          const segR = Math.max(p.xRatio, next.xRatio);
+          // セグメントが消去範囲と重複する場合、両方のポイントを消去
+          if (segL < xMax && segR > xMin) {
+            remove[i] = true;
+            remove[i + 1] = true;
+          }
+        }
+      }
+
+      // 消去されないポイントをセグメントに分割して保持
+      let current: TargetPoint[] = [];
+      for (let i = 0; i < stroke.length; i++) {
+        if (!remove[i]) {
+          current.push(stroke[i]);
+        } else {
+          if (current.length > 0) {
+            result.push(current);
+            current = [];
+          }
+        }
+      }
+      if (current.length > 0) {
+        result.push(current);
+      }
+    }
+    return result;
+  }, []);
+
+  // スナップモード専用: 描画範囲内のポイントを除去
+  // 描画範囲[xMin, xMax)内のポイントを消去する（xMaxちょうどは残す）
+  // これにより新しいストロークの終端と既存ストロークの継続部分が正しく接続される
+  const eraseSnapOverlap = useCallback((strokes: TargetPoint[][], xMin: number, xMax: number): TargetPoint[][] => {
+    const result: TargetPoint[][] = [];
+    for (const stroke of strokes) {
+      if (stroke.length === 0) continue;
+
+      // ストロークのxRatio範囲を取得
+      let sMin = Infinity;
+      let sMax = -Infinity;
+      for (const p of stroke) {
+        if (p.xRatio < sMin) sMin = p.xRatio;
+        if (p.xRatio > sMax) sMax = p.xRatio;
+      }
+
+      // ストロークが描画範囲に完全に含まれる場合は丸ごと除去
+      if (sMin >= xMin && sMax < xMax) {
+        continue;
+      }
+      // ストロークの全ポイントがxMin以上かつxMax以下 → 丸ごと除去
+      if (sMin >= xMin && sMax <= xMax) {
+        continue;
+      }
+
+      // ストロークが描画範囲と全く重ならない場合はそのまま保持
+      if (sMax <= xMin || sMin >= xMax) {
+        result.push(stroke);
+        continue;
+      }
+
+      // 部分的に重複: xMin <= p < xMax のポイントを消去（xMaxちょうどは残す）
       let current: TargetPoint[] = [];
       for (const p of stroke) {
-        if (p.xRatio < xMin || p.xRatio > xMax) {
+        if (p.xRatio < xMin || p.xRatio >= xMax) {
           current.push(p);
         } else {
-          // 重複範囲に入った → ここまでのセグメントを保存
           if (current.length > 0) {
             result.push(current);
             current = [];
@@ -180,6 +256,8 @@ export default function PitchCanvas({
   const strokeXMinRef = useRef(0);
   const strokeXMaxRef = useRef(0);
   const baseStrokesRef = useRef<TargetPoint[][]>([]);
+  // ドラッグ方向: "draw"=左→右（描画）, "erase"=右→左（消去）
+  const dragModeRef = useRef<"draw" | "erase">("draw");
 
   // 編集モードのマウスイベント
   useEffect(() => {
@@ -188,15 +266,14 @@ export default function PitchCanvas({
 
     const handleMouseDown = (e: MouseEvent) => {
       isDrawingRef.current = true;
+      hasDraggedRef.current = false;
       const point = mouseToPoint(e);
       if (point && onTargetStrokesChange) {
-        currentStrokeRef.current = [point];
         strokeXMinRef.current = point.xRatio;
         strokeXMaxRef.current = point.xRatio;
-        // 既存ストロークから重複を除去してベースとして保存
-        const cleaned = eraseOverlap(targetStrokes, point.xRatio - 0.002, point.xRatio + 0.002);
-        baseStrokesRef.current = cleaned;
-        onTargetStrokesChange([...cleaned, [point]]);
+        // どちらのモードでもドラッグ開始まで描画を遅延
+        pendingPointRef.current = point;
+        baseStrokesRef.current = [...targetStrokes];
       }
     };
 
@@ -204,24 +281,108 @@ export default function PitchCanvas({
       if (!isDrawingRef.current) return;
       const point = mouseToPoint(e);
       if (point && onTargetStrokesChange) {
-        const last = currentStrokeRef.current[currentStrokeRef.current.length - 1];
-        if (!last || Math.abs(point.xRatio - last.xRatio) > 0.002) {
-          currentStrokeRef.current = [...currentStrokeRef.current, point];
-          // 描画範囲を拡張
+        // 初回ドラッグ: 方向を判定してモードを決定
+        if (!hasDraggedRef.current && pendingPointRef.current) {
+          if (snapToGrid) {
+            // スナップモード: 同じスナップ位置なら何もしない（フラグメント防止）
+            if (point.xRatio === pendingPointRef.current.xRatio) {
+              return;
+            }
+          }
+          // ドラッグ方向を判定
+          dragModeRef.current = point.xRatio >= pendingPointRef.current.xRatio ? "draw" : "erase";
+          hasDraggedRef.current = true;
+          const startPoint = pendingPointRef.current;
+          pendingPointRef.current = null;
+
+          if (dragModeRef.current === "erase") {
+            // 消去モード: ストロークを作成せず、ドラッグ範囲の既存ストロークを消去
+            currentStrokeRef.current = [];
+            strokeXMinRef.current = Math.min(startPoint.xRatio, point.xRatio);
+            strokeXMaxRef.current = Math.max(startPoint.xRatio, point.xRatio);
+            if (snapToGrid) {
+              onTargetStrokesChange(eraseSnapOverlap(baseStrokesRef.current, strokeXMinRef.current, strokeXMaxRef.current));
+            } else {
+              onTargetStrokesChange(eraseOverlap(baseStrokesRef.current, strokeXMinRef.current - 0.002, strokeXMaxRef.current + 0.002));
+            }
+          } else {
+            // 描画モード
+            currentStrokeRef.current = [startPoint, point];
+            strokeXMinRef.current = Math.min(startPoint.xRatio, point.xRatio);
+            strokeXMaxRef.current = Math.max(startPoint.xRatio, point.xRatio);
+            if (snapToGrid) {
+              const cleaned = eraseSnapOverlap(baseStrokesRef.current, strokeXMinRef.current, strokeXMaxRef.current);
+              onTargetStrokesChange([...cleaned, currentStrokeRef.current]);
+            } else {
+              const cleaned = eraseOverlap(baseStrokesRef.current, strokeXMinRef.current - 0.002, strokeXMaxRef.current + 0.002);
+              onTargetStrokesChange([...cleaned, currentStrokeRef.current]);
+            }
+          }
+          return;
+        }
+
+        // 継続ドラッグ
+        if (dragModeRef.current === "erase") {
+          // 消去モード: ドラッグ範囲を拡大して消去
           strokeXMinRef.current = Math.min(strokeXMinRef.current, point.xRatio);
           strokeXMaxRef.current = Math.max(strokeXMaxRef.current, point.xRatio);
-          // ベースストロークから新しい範囲の重複を除去
-          const cleaned = eraseOverlap(baseStrokesRef.current, strokeXMinRef.current - 0.002, strokeXMaxRef.current + 0.002);
-          baseStrokesRef.current = cleaned;
-          onTargetStrokesChange([...cleaned, currentStrokeRef.current]);
+          if (snapToGrid) {
+            onTargetStrokesChange(eraseSnapOverlap(baseStrokesRef.current, strokeXMinRef.current, strokeXMaxRef.current));
+          } else {
+            onTargetStrokesChange(eraseOverlap(baseStrokesRef.current, strokeXMinRef.current - 0.002, strokeXMaxRef.current + 0.002));
+          }
+        } else {
+          // 描画モード
+          const last = currentStrokeRef.current[currentStrokeRef.current.length - 1];
+          if (!last || Math.abs(point.xRatio - last.xRatio) > 0.002) {
+            currentStrokeRef.current = [...currentStrokeRef.current, point];
+            strokeXMinRef.current = Math.min(strokeXMinRef.current, point.xRatio);
+            strokeXMaxRef.current = Math.max(strokeXMaxRef.current, point.xRatio);
+            if (snapToGrid) {
+              const cleaned = eraseSnapOverlap(baseStrokesRef.current, strokeXMinRef.current, strokeXMaxRef.current);
+              onTargetStrokesChange([...cleaned, currentStrokeRef.current]);
+            } else {
+              const cleaned = eraseOverlap(baseStrokesRef.current, strokeXMinRef.current - 0.002, strokeXMaxRef.current + 0.002);
+              onTargetStrokesChange([...cleaned, currentStrokeRef.current]);
+            }
+          }
         }
       }
     };
 
     const handleMouseUp = () => {
       if (isDrawingRef.current) {
+        // スナップモード: 描画完了時に重複ストロークを最終クリーンアップ
+        if (snapToGrid && hasDraggedRef.current && currentStrokeRef.current.length >= 2 && onTargetStrokesChange) {
+          const xMin = strokeXMinRef.current;
+          const xMax = strokeXMaxRef.current;
+          // targetStrokesの最後が現在描画中のストローク
+          const cleaned: TargetPoint[][] = [];
+          for (let si = 0; si < targetStrokes.length; si++) {
+            const stroke = targetStrokes[si];
+            // 最後のストローク（現在描画中）は常に保持
+            if (si === targetStrokes.length - 1) {
+              cleaned.push(stroke);
+              continue;
+            }
+            if (stroke.length === 0) continue;
+            // ストロークの全ポイントが描画範囲内なら除去
+            const allInRange = stroke.every(
+              p => p.xRatio >= xMin && p.xRatio <= xMax
+            );
+            if (allInRange) continue;
+            // 1点のみでxRatioが描画範囲の端点にある場合も除去（フラグメント防止）
+            if (stroke.length === 1 && stroke[0].xRatio >= xMin && stroke[0].xRatio <= xMax) {
+              continue;
+            }
+            cleaned.push(stroke);
+          }
+          if (cleaned.length !== targetStrokes.length) {
+            onTargetStrokesChange(cleaned);
+          }
+        }
         isDrawingRef.current = false;
-        onStrokeCommit?.();
+        pendingPointRef.current = null;
       }
     };
 
@@ -243,7 +404,7 @@ export default function PitchCanvas({
       canvas.removeEventListener("mousemove", handleCursorMove);
       window.removeEventListener("mouseup", handleMouseUp);
     };
-  }, [editMode, mouseToPoint, onTargetStrokesChange, targetStrokes, eraseOverlap, onCursorMove, onStrokeCommit]);
+  }, [editMode, mouseToPoint, onTargetStrokesChange, targetStrokes, eraseOverlap, onCursorMove, snapToGrid]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -439,9 +600,15 @@ export default function PitchCanvas({
             if (i === stroke.length || stroke[i].midi !== stroke[segStart].midi) {
               const midi = stroke[segStart].midi;
               const x1 = stroke[segStart].xRatio * width;
-              const x2 = i < stroke.length
-                ? stroke[i].xRatio * width
-                : stroke[i - 1].xRatio * width + 2;
+              let x2: number;
+              if (i < stroke.length) {
+                x2 = stroke[i].xRatio * width;
+              } else {
+                // 最後のセグメント: 始点と終点が異なる場合はそのまま、
+                // 同じ場合のみ+2pxで最低幅を確保
+                const lastX = stroke[i - 1].xRatio * width;
+                x2 = lastX === x1 ? lastX + 2 : lastX;
+              }
               const rectWidth = Math.max(x2 - x1, 1);
 
               const yTop = midiToY(midi + 0.5);
