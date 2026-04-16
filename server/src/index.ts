@@ -6,10 +6,13 @@ import type { ClientToServerEvents, ServerToClientEvents } from "./types.js";
 const PORT = parseInt(process.env.PORT || "3001", 10);
 const CLIENT_ORIGIN = process.env.CLIENT_ORIGIN || "http://localhost:3000";
 
+// カンマ区切りの複数オリジンに対応
+const allowedOrigins = CLIENT_ORIGIN.split(",").map((s) => s.trim());
+
 const httpServer = createServer();
 const io = new Server<ClientToServerEvents, ServerToClientEvents>(httpServer, {
   cors: {
-    origin: CLIENT_ORIGIN,
+    origin: allowedOrigins.length === 1 ? allowedOrigins[0] : allowedOrigins,
     methods: ["GET", "POST"],
   },
   maxHttpBufferSize: 5e6, // 5MB (MIDIファイル転送用)
