@@ -479,19 +479,21 @@ export default function PitchMonitor({ collabState, statusBar }: PitchMonitorPro
         </div>
       )}
 
-      <div className="flex flex-1 gap-4 min-h-0">
+      <div className="flex flex-col md:flex-row flex-1 gap-4 min-h-0">
         {/* 左パネル: 音名表示 + コントロール */}
         <div
-          className="relative w-[200px] shrink-0 rounded-lg p-4"
+          className="flex flex-col w-full md:w-[200px] shrink-0 rounded-lg p-4 min-h-0"
           style={{
             backgroundColor: "rgba(255, 255, 255, 0.02)",
             border: "1px solid rgba(255, 255, 255, 0.06)",
           }}
         >
-          <NoteDisplay note={currentNote} />
+          <div className="shrink-0">
+            <NoteDisplay note={currentNote} />
+          </div>
 
-          {/* BPM入力 + 小節数 + メトロノーム（絶対位置で固定） */}
-          <div className="absolute left-4 right-4" style={{ top: "180px" }}>
+          {/* BPM入力 + 小節数 + メトロノーム（中段: スクロール可） */}
+          <div className="flex-1 min-h-0 overflow-y-auto mt-4 pr-1">
             <label
               className="block text-xs mb-1"
               style={{ color: "#555555", fontFamily: "monospace" }}
@@ -664,8 +666,8 @@ export default function PitchMonitor({ collabState, statusBar }: PitchMonitorPro
             )}
           </div>
 
-          {/* 下部固定: スコア + ボタン */}
-          <div className="absolute left-4 right-4 bottom-4 flex flex-col gap-2">
+          {/* 下部: スコア + ボタン */}
+          <div className="shrink-0 mt-3 flex flex-col gap-2">
             {/* スコア表示 */}
             {score && <ScoreDisplay score={score} />}
             {/* 経過時間 */}
@@ -758,9 +760,9 @@ export default function PitchMonitor({ collabState, statusBar }: PitchMonitorPro
         </div>
 
         {/* 右パネル: ピアノロール */}
-        <div className="flex flex-1 flex-col gap-4 min-h-0">
+        <div className="flex flex-1 flex-col gap-4 min-h-0 min-w-0">
           <div
-            className="flex-1 rounded-lg overflow-hidden min-h-0"
+            className="flex-1 rounded-lg overflow-hidden min-h-[240px]"
             style={{
               backgroundColor: "rgba(255, 255, 255, 0.02)",
               border: "1px solid rgba(255, 255, 255, 0.06)",
